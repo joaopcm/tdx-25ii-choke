@@ -7,6 +7,11 @@ let outputUniqueID: MIDIUniqueID = 0x5444_5843
 let chokeNoteByCymbalNote: [UInt32: UInt32] = [49: 80, 57: 81, 59: 82]
 let chokeVelocity: UInt32 = 100
 let chokeNoteLength = DispatchTimeInterval.milliseconds(50)
+let hihatController: UInt32 = 4
+// measured on the TDX-25 II pedal held still: open 52, 1/4 61, 1/2 67, 3/4 and closed both 76
+let hihatCurve: [(reading: UInt32, value: UInt32)] = [(52, 0), (61, 42), (67, 85), (76, 127)]
+let hihatHitNotes: Set<UInt32> = [42, 46]
+let hihatNoteByClosure: [(upTo: UInt32, note: UInt32)] = [(19, 46), (49, 70), (79, 69), (109, 68), (127, 42)]
 
 setvbuf(stdout, nil, _IOLBF, 0)
 
@@ -48,11 +53,29 @@ func send(_ words: [UInt32]) {
   }
 }
 
-func route(_ message: [UInt32]) {
-  let word = message[0]
-  guard word >> 28 == 0x2, (word >> 16) & 0xF0 == 0xA0 else { return send(message) }
+var hihatClosure: UInt32?
+var hihatNoteSounding: [UInt32: UInt32] = [:]
+
+func hihatHit(_ word: UInt32) -> UInt32 {
+  let note = (word >> 8) & 0x7F
+  guard word & 0x7F > 0 else { return hihatNoteSounding.removeValue(forKey: note) ?? note }
+  guard let closure = hihatClosure else { return note }
+  let played = hihatNoteByClosure.first { closure <= $0.upTo }!.note
+  hihatNoteSounding[note] = played
+  return played
+}
+
+func hihatValue(_ reading: UInt32) -> UInt32 {
+  guard reading > hihatCurve[0].reading else { return 0 }
+  for (low, high) in zip(hihatCurve, hihatCurve.dropFirst()) where reading <= high.reading {
+    return low.value + (reading - low.reading) * (high.value - low.value) / (high.reading - low.reading)
+  }
+  return 127
+}
+
+func choke(_ word: UInt32) {
   let cymbalNote = (word >> 8) & 0x7F
-  guard let chokeNote = chokeNoteByCymbalNote[cymbalNote] else { return send(message) }
+  guard let chokeNote = chokeNoteByCymbalNote[cymbalNote] else { return send([word]) }
   guard word & 0x7F > 0 else { return }
   let groupAndChannel = word & 0x0F0F_0000
   send([0x2090_0000 | groupAndChannel | chokeNote << 8 | chokeVelocity])
@@ -60,6 +83,20 @@ func route(_ message: [UInt32]) {
     send([0x2080_0000 | groupAndChannel | chokeNote << 8])
   }
   print("choke \(cymbalNote) -> \(chokeNote)")
+}
+
+func route(_ message: [UInt32]) {
+  let word = message[0]
+  guard word >> 28 == 0x2 else { return send(message) }
+  switch (word >> 16) & 0xF0 {
+  case 0xA0: choke(word)
+  case 0x90 where hihatHitNotes.contains((word >> 8) & 0x7F): send([word & 0xFFFF_00FF | hihatHit(word) << 8])
+  case 0xB0 where (word >> 8) & 0x7F == hihatController:
+    let closure = hihatValue(word & 0x7F)
+    hihatClosure = closure
+    send([word & 0xFFFF_FF00 | closure])
+  default: send(message)
+  }
 }
 
 func connectDevice() {

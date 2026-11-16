@@ -3,14 +3,25 @@ import hashlib
 import sys
 
 OFFICIAL_SHA256 = "65965ef444a07a7d62cee9728b8a6dd05c4b0b2b5c1f58ef8c9fcbc66ade63e7"
-PATCHED_SHA256 = "4c92d905a1baead7181ea6188fcac4a374721f5beb096e274579f3ec85c6802a"
+PATCHED_SHA256 = "7a5e79cea7255e35a4e9c1b20fa164e01689867c46c3280df00434340c393c9c"
 
-INTERNAL_CHOKE_SEND = 0xC34D
-CHOKE_CALL_OPERANDS = {0xCD71: 0xE3E1, 0xCD89: 0xE3E5, 0xCDA1: 0xE3E9}
-STUB_ADDRESS = 0xE3E1
-STUB = bytes.fromhex(
+REPLACEMENTS = {
+    0xCD71: bytes.fromhex("e3e1"),
+    0xCD89: bytes.fromhex("e3e5"),
+    0xCDA1: bytes.fromhex("e3e9"),
+    0x3ACB: bytes.fromhex("12ee20 000000000000"),
+}
+CHOKE_STUB_ADDRESS = 0xE3E1
+CHOKE_STUB = bytes.fromhex(
     "7431 8006 7439 8002 743b"
     "cd fc 12cf63 7fa9 7b00 12cf63 ec fd 7fa9 7b7f 02c34d"
+)
+HIHAT_STUB_ADDRESS = 0xEE20
+HIHAT_STUB = bytes.fromhex(
+    "900ae8 e0 245b f8 e6 fd"
+    "c3 13 f5f0 900c1d e0 c3 95f0 2401 b40300 4018"
+    "e5f0 f0 ee c0e0 ef c0e0 abf0 7d04 7fb0 12cf63 d0e0 ff d0e0 fe"
+    "e6 fd 900ae8 22"
 )
 
 
@@ -19,22 +30,26 @@ def record(address, data):
     return ":" + (raw + bytes([-sum(raw) & 0xFF])).hex().upper()
 
 
+def records(address, data):
+    return [record(address + offset, data[offset : offset + 16]) for offset in range(0, len(data), 16)]
+
+
 def patch(lines):
     patched = []
     for line in lines:
         count, address, kind = int(line[1:3], 16), int(line[3:7], 16), int(line[7:9], 16)
         if kind != 0:
+            patched.extend(records(HIHAT_STUB_ADDRESS, HIHAT_STUB))
             patched.append(line)
             continue
         data = bytearray.fromhex(line[9 : 9 + 2 * count])
-        for operand, target in CHOKE_CALL_OPERANDS.items():
-            for offset, byte in enumerate(target.to_bytes(2, "big")):
-                if address <= operand + offset < address + count:
-                    data[operand + offset - address] = byte
+        for start, replacement in REPLACEMENTS.items():
+            for offset, byte in enumerate(replacement):
+                if address <= start + offset < address + count:
+                    data[start + offset - address] = byte
         patched.append(record(address, bytes(data)))
-        if address + count == STUB_ADDRESS:
-            patched.append(record(STUB_ADDRESS, STUB[:16]))
-            patched.append(record(STUB_ADDRESS + 16, STUB[16:]))
+        if address + count == CHOKE_STUB_ADDRESS:
+            patched.extend(records(CHOKE_STUB_ADDRESS, CHOKE_STUB))
     return patched
 
 
