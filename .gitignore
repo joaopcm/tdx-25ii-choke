@@ -1,0 +1,6 @@
+build/
+*.hex
+*.zip
+*.iso
+iso/
+binary/
